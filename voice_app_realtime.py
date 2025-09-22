@@ -784,6 +784,9 @@ def main():
     st.title(APP_TITLE)
     st.markdown(APP_DESCRIPTION)
     
+    # Audio setup notice
+    st.info("🔊 **Audio Setup**: Click anywhere on the page first to enable audio playback, then click the play button when the bot responds.")
+    
     # Sidebar for conversation state
     with st.sidebar:
         st.header("Conversation Status")
@@ -837,30 +840,54 @@ def main():
                     st.write("**Bot Response:**")
                     st.write(bot_response)
                     
-                    # Play audio immediately using streaming TTS
-                    st.info("🔊 Playing audio response...")
+                    # Generate TTS audio for web playback
+                    st.info("🔊 Generating audio response...")
                     try:
-                        # Run the async audio playback
-                        audio_success = asyncio.run(play_audio_async(bot_response))
-                        if audio_success:
-                            st.success("✅ Audio playback completed!")
-                        else:
-                            st.warning("⚠️ Audio playback failed, falling back to manual playback")
-                            # Fallback to regular TTS
-                            voice_bot = VoiceBot()
-                            tts_audio = voice_bot.text_to_speech(bot_response)
-                            if tts_audio:
-                                audio_base64 = base64.b64encode(tts_audio).decode()
-                                st.audio(f"data:audio/mp3;base64,{audio_base64}", format="audio/mp3")
-                    except Exception as e:
-                        logger.error(f"Audio playback error: {e}")
-                        st.error(f"Audio playback error: {e}")
-                        # Fallback to regular TTS
                         voice_bot = VoiceBot()
                         tts_audio = voice_bot.text_to_speech(bot_response)
+                        
                         if tts_audio:
+                            # Convert to base64 for web playback
                             audio_base64 = base64.b64encode(tts_audio).decode()
-                            st.audio(f"data:audio/mp3;base64,{audio_base64}", format="audio/mp3")
+                            
+                            # Create audio player with autoplay attempt
+                            st.markdown("### 🔊 Bot Response Audio")
+                            
+                            # Try autoplay with user interaction
+                            st.markdown(f"""
+                            <audio controls autoplay style="width: 100%; margin: 10px 0;">
+                                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                                Your browser does not support the audio element.
+                            </audio>
+                            <script>
+                                // Try to play audio after user interaction
+                                document.addEventListener('click', function() {{
+                                    const audio = document.querySelector('audio');
+                                    if (audio) {{
+                                        audio.play().catch(function(error) {{
+                                            console.log('Autoplay prevented:', error);
+                                        }});
+                                    }}
+                                }}, {{ once: true }});
+                            </script>
+                            """, unsafe_allow_html=True)
+                            
+                            # Also provide a manual play button
+                            st.markdown("**Click the play button above to hear the bot's response**")
+                            
+                            # Download option
+                            st.download_button(
+                                label="📥 Download Audio Response",
+                                data=tts_audio,
+                                file_name=f"bot_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
+                                mime="audio/mp3"
+                            )
+                        else:
+                            st.warning("⚠️ Could not generate audio response")
+                            
+                    except Exception as e:
+                        logger.error(f"Audio generation error: {e}")
+                        st.error(f"Audio generation error: {e}")
                     
                     st.session_state.is_processing = False
                 else:
@@ -880,30 +907,54 @@ def main():
             st.write("**Bot Response:**")
             st.write(bot_response)
             
-            # Play audio immediately using streaming TTS
-            st.info("🔊 Playing audio response...")
+            # Generate TTS audio for web playback
+            st.info("🔊 Generating audio response...")
             try:
-                # Run the async audio playback
-                audio_success = asyncio.run(play_audio_async(bot_response))
-                if audio_success:
-                    st.success("✅ Audio playback completed!")
-                else:
-                    st.warning("⚠️ Audio playback failed, falling back to manual playback")
-                    # Fallback to regular TTS
-                    voice_bot = VoiceBot()
-                    tts_audio = voice_bot.text_to_speech(bot_response)
-                    if tts_audio:
-                        audio_base64 = base64.b64encode(tts_audio).decode()
-                        st.audio(f"data:audio/mp3;base64,{audio_base64}", format="audio/mp3")
-            except Exception as e:
-                logger.error(f"Audio playback error: {e}")
-                st.error(f"Audio playback error: {e}")
-                # Fallback to regular TTS
                 voice_bot = VoiceBot()
                 tts_audio = voice_bot.text_to_speech(bot_response)
+                
                 if tts_audio:
+                    # Convert to base64 for web playback
                     audio_base64 = base64.b64encode(tts_audio).decode()
-                    st.audio(f"data:audio/mp3;base64,{audio_base64}", format="audio/mp3")
+                    
+                    # Create audio player with autoplay attempt
+                    st.markdown("### 🔊 Bot Response Audio")
+                    
+                    # Try autoplay with user interaction
+                    st.markdown(f"""
+                    <audio controls autoplay style="width: 100%; margin: 10px 0;">
+                        <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                        Your browser does not support the audio element.
+                    </audio>
+                    <script>
+                        // Try to play audio after user interaction
+                        document.addEventListener('click', function() {{
+                            const audio = document.querySelector('audio');
+                            if (audio) {{
+                                audio.play().catch(function(error) {{
+                                    console.log('Autoplay prevented:', error);
+                                }});
+                            }}
+                        }}, {{ once: true }});
+                    </script>
+                    """, unsafe_allow_html=True)
+                    
+                    # Also provide a manual play button
+                    st.markdown("**Click the play button above to hear the bot's response**")
+                    
+                    # Download option
+                    st.download_button(
+                        label="📥 Download Audio Response",
+                        data=tts_audio,
+                        file_name=f"bot_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
+                        mime="audio/mp3"
+                    )
+                else:
+                    st.warning("⚠️ Could not generate audio response")
+                    
+            except Exception as e:
+                logger.error(f"Audio generation error: {e}")
+                st.error(f"Audio generation error: {e}")
         
         # Instructions
         st.subheader("📋 How to Use")
@@ -926,10 +977,12 @@ def main():
         - ✅ **Automatic silence detection** - no need to click stop
         - ✅ **Ultra-fast processing** - parallel async processing for instant responses
         - ✅ **Smart audio detection** - only records when you speak
-        - ✅ **Instant audio playback** - hear bot voice immediately with streaming TTS
+        - ✅ **Web-optimized audio** - click-to-play audio controls for browser compatibility
         - ✅ **Response caching** - common queries get instant cached responses
         - ✅ **Parallel extraction** - GPT and regex extraction run simultaneously
-        - ✅ **Fallback support** - manual audio player if streaming fails
+        - ✅ **Download option** - save audio responses as MP3 files
+        
+        **🔊 Audio Note:** Due to browser restrictions, audio requires user interaction. Click the play button to hear the bot's response.
         """)
     
     with col2:
