@@ -1,0 +1,10 @@
+streamlit>=1.28.1
+streamlit-realtime-audio-recorder>=0.0.1
+openai[voice_helpers]>=1.3.0
+supabase>=2.0.0
+python-dotenv>=1.0.0
+pydub>=0.25.1
+numpy>=1.26.0
+pandas>=2.1.0
+requests>=2.31.0
+setuptools>=68.0.0
