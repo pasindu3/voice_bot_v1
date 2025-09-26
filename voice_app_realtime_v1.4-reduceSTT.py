@@ -22,6 +22,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import io
 import wave
 import numpy as np
+import streamlit.components.v1 as components
 
 # Helper: trim leading/trailing silence from WAV bytes using RMS threshold (NumPy-based)
 def trim_wav_silence(input_bytes: bytes, threshold: int = 500, frame_ms: int = 20) -> bytes:
@@ -138,6 +139,8 @@ if 'voice_bot' not in st.session_state:
     st.session_state.voice_bot = None
 if 'verification_inputs' not in st.session_state:
     st.session_state.verification_inputs = {"dob": None, "first": None, "last": None}
+if 'audio_clips' not in st.session_state:
+    st.session_state.audio_clips = []
 
 # Lightweight preset cache for instant responses
 PRESET_CACHE = {
@@ -234,18 +237,21 @@ class VoiceBot:
         
         
     async def text_to_speech_streaming(self, text):
-        """Convert text to speech using streaming TTS for immediate playback"""
+        """Generate MP3 and push to browser for playback (Cloud-safe)."""
         try:
-            # Use streaming response for immediate playback
-            async with self.async_client.audio.speech.with_streaming_response.create(
-                model="tts-1",
-                voice="alloy",
-                input=text,
-                response_format="pcm"
-            ) as stream_response:
-                # Play audio directly using LocalAudioPlayer
-                await LocalAudioPlayer().play(stream_response)
-                return True
+            loop = asyncio.get_event_loop()
+            # Reuse sync client to get bytes and avoid streaming on server
+            audio_bytes = await loop.run_in_executor(None, lambda: self.text_to_speech(text))
+            if not audio_bytes:
+                return False
+            # Store for UI playback
+            if 'audio_clips' not in st.session_state:
+                st.session_state.audio_clips = []
+            st.session_state.audio_clips.append({
+                "mime": "audio/mp3",
+                "b64": base64.b64encode(audio_bytes).decode('utf-8')
+            })
+            return True
         except Exception as e:
             logger.error(f"Streaming TTS error: {e}")
             return False
@@ -304,12 +310,13 @@ class VoiceBot:
     
     
     def text_to_speech(self, text):
-        """Convert text to speech using GPT-4-mini-TTS (fallback method)"""
+        """Convert text to speech using GPT TTS and return MP3 bytes"""
         try:
             response = self.client.audio.speech.create(
                 model="tts-1",
                 voice="alloy",
-                input=text
+                input=text,
+                response_format="mp3"
             )
             return response.content
         except Exception as e:
@@ -963,6 +970,8 @@ def main():
                     
                     # Decode the base64 audio data
                     audio_bytes = base64.b64decode(audio_content)
+                    # Reset clips for this turn
+                    st.session_state.audio_clips = []
                     
                     with st.spinner("🚀 Ultra-fast streaming processing..."):
                         # Process the audio with streaming (includes auto TTS)
@@ -976,7 +985,35 @@ def main():
                         st.write("(no input captured)")
                     st.write("**Bot Response:**")
                     st.write(bot_response)
-                    
+                    # Autoplay all generated clips sequentially (playlist)
+                    if st.session_state.audio_clips:
+                        uid = str(int(time.time() * 1000))
+                        sources_js = "[" + ",".join([
+                            f"'data:{c['mime']};base64,{c['b64']}'" for c in st.session_state.audio_clips
+                        ]) + "]"
+                        components.html(
+                            f"""
+                            <audio id=\"ap-{uid}\" autoplay playsinline preload=\"auto\" style=\"width:100%\"></audio>
+                            <script>
+                              (function(){{
+                                const srcs = {sources_js};
+                                let i = 0;
+                                const a = document.getElementById('ap-{uid}');
+                                if (!a || !srcs.length) return;
+                                const playIdx = (idx) => {{
+                                  if (idx >= srcs.length) return;
+                                  a.src = srcs[idx];
+                                  const tryPlay = () => a.play().catch(()=>{{ setTimeout(tryPlay, 300); }});
+                                  tryPlay();
+                                }};
+                                a.addEventListener('ended', () => {{ i++; playIdx(i); }});
+                                playIdx(0);
+                              }})();
+                            </script>
+                            """,
+                            height=0
+                        )
+                        st.session_state.audio_clips = []
                     st.session_state.is_processing = False
                 else:
                     st.error("No audio data received.")
@@ -992,11 +1029,40 @@ def main():
         if user_text_input and st.button("Send Text Message"):
             with st.spinner("🚀 Ultra-fast streaming processing..."):
                 # Process text as if it was transcribed audio
+                st.session_state.audio_clips = []
                 bot_response, _ = asyncio.run(process_voice_input_streaming(user_text_input.encode()))
             
             # Display the conversation
             st.write("**Bot Response:**")
             st.write(bot_response)
+            if st.session_state.audio_clips:
+                uid = str(int(time.time() * 1000))
+                sources_js = "[" + ",".join([
+                    f"'data:{c['mime']};base64,{c['b64']}'" for c in st.session_state.audio_clips
+                ]) + "]"
+                components.html(
+                    f"""
+                    <audio id=\"ap-{uid}\" autoplay playsinline preload=\"auto\" style=\"width:100%\"></audio>
+                    <script>
+                      (function(){{
+                        const srcs = {sources_js};
+                        let i = 0;
+                        const a = document.getElementById('ap-{uid}');
+                        if (!a || !srcs.length) return;
+                        const playIdx = (idx) => {{
+                          if (idx >= srcs.length) return;
+                          a.src = srcs[idx];
+                          const tryPlay = () => a.play().catch(()=>{{ setTimeout(tryPlay, 300); }});
+                          tryPlay();
+                        }};
+                        a.addEventListener('ended', () => {{ i++; playIdx(i); }});
+                        playIdx(0);
+                      }})();
+                    </script>
+                    """,
+                    height=0
+                )
+                st.session_state.audio_clips = []
         
         # Instructions
         st.subheader("📋 How to Use")
