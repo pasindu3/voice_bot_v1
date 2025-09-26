@@ -1,5 +1,10 @@
 .env
 *pdf
 rag_voice.py
+.streamlit/
+voice_bot_latest.py
+voice_app_realtime_v1.4.py
+voice_bot_latest/
+
 
 
