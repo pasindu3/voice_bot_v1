@@ -21,9 +21,9 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Removed pygame dependency - using LocalAudioPlayer instead
 import io
 import wave
-import audioop
+import numpy as np
 
-# Helper: trim leading/trailing silence from WAV bytes using RMS threshold
+# Helper: trim leading/trailing silence from WAV bytes using RMS threshold (NumPy-based)
 def trim_wav_silence(input_bytes: bytes, threshold: int = 500, frame_ms: int = 20) -> bytes:
     try:
         with io.BytesIO(input_bytes) as bio_in:
@@ -33,50 +33,52 @@ def trim_wav_silence(input_bytes: bytes, threshold: int = 500, frame_ms: int = 2
                 framerate = wf_in.getframerate()
                 nframes = wf_in.getnframes()
                 raw = wf_in.readframes(nframes)
-        # ensure 16-bit mono
+        # Convert to int16 mono
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(sampwidth, np.int16)
+        audio = np.frombuffer(raw, dtype=dtype)
         if sampwidth != 2:
-            raw = audioop.lin2lin(raw, sampwidth, 2)
-            sampwidth = 2
-        if nchannels == 2:
-            raw = audioop.tomono(raw, sampwidth, 0.5, 0.5)
-        elif nchannels > 2:
-            raw = audioop.tomono(raw, sampwidth, 1.0, 0.0)
-        frame_size = int(framerate * (frame_ms / 1000.0))
-        frame_bytes = frame_size * sampwidth
-        total_bytes = len(raw)
+            # normalize then scale to int16
+            audio = audio.astype(np.float32)
+            max_val = np.max(np.abs(audio)) or 1.0
+            audio = (audio / max_val * 32767.0).astype(np.int16)
+        if nchannels > 1:
+            audio = audio.reshape(-1, nchannels).mean(axis=1).astype(np.int16)
+        if audio.size == 0:
+            return input_bytes
+        frame_size = max(1, int(framerate * (frame_ms / 1000.0)))
+        num_frames = int(np.ceil(audio.size / frame_size))
         # find start
-        start = 0
-        i = 0
-        while i + frame_bytes <= total_bytes:
-            frame = raw[i:i + frame_bytes]
-            if audioop.rms(frame, sampwidth) > threshold:
-                start = i
+        start_index = 0
+        for i in range(num_frames):
+            s = i * frame_size
+            e = min(s + frame_size, audio.size)
+            frame = audio[s:e].astype(np.float32)
+            rms = float(np.sqrt(np.mean(frame * frame))) if frame.size else 0.0
+            if rms > threshold:
+                start_index = s
                 break
-            i += frame_bytes
         # find end
-        end = total_bytes
-        j = total_bytes - frame_bytes
-        while j >= 0:
-            frame = raw[j:j + frame_bytes]
-            if audioop.rms(frame, sampwidth) > threshold:
-                end = j + frame_bytes
+        end_index = audio.size
+        for i in range(num_frames - 1, -1, -1):
+            s = i * frame_size
+            e = min(s + frame_size, audio.size)
+            frame = audio[s:e].astype(np.float32)
+            rms = float(np.sqrt(np.mean(frame * frame))) if frame.size else 0.0
+            if rms > threshold:
+                end_index = e
                 break
-            j -= frame_bytes
-        if start < end:
-            trimmed = raw[start:end]
-        else:
-            trimmed = raw
+        trimmed = audio[start_index:end_index] if start_index < end_index else audio
         out_bio = io.BytesIO()
         with wave.open(out_bio, 'wb') as wf_out:
             wf_out.setnchannels(1)
             wf_out.setsampwidth(2)
             wf_out.setframerate(framerate)
-            wf_out.writeframes(trimmed)
+            wf_out.writeframes(trimmed.astype(np.int16).tobytes())
         return out_bio.getvalue()
     except Exception:
         return input_bytes
 
-# Helper: resample any WAV bytes to 16k mono 16-bit PCM
+# Helper: resample any WAV bytes to 16k mono 16-bit PCM (NumPy-based)
 def resample_wav_to_16k_mono(input_bytes: bytes) -> bytes:
     try:
         with io.BytesIO(input_bytes) as bio_in:
@@ -86,27 +88,29 @@ def resample_wav_to_16k_mono(input_bytes: bytes) -> bytes:
                 framerate = wf_in.getframerate()
                 nframes = wf_in.getnframes()
                 raw = wf_in.readframes(nframes)
-        # ensure 16-bit
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(sampwidth, np.int16)
+        audio = np.frombuffer(raw, dtype=dtype)
+        # to int16 mono
         if sampwidth != 2:
-            raw = audioop.lin2lin(raw, sampwidth, 2)
-            sampwidth = 2
-        # to mono
-        if nchannels == 2:
-            raw = audioop.tomono(raw, sampwidth, 0.5, 0.5)
-            nchannels = 1
-        elif nchannels > 2:
-            raw = audioop.tomono(raw, sampwidth, 1.0, 0.0)
-            nchannels = 1
-        # resample to 16k
-        if framerate != 16000:
-            raw, _ = audioop.ratecv(raw, sampwidth, 1, framerate, 16000, None)
-            framerate = 16000
+            audio = audio.astype(np.float32)
+            max_val = np.max(np.abs(audio)) or 1.0
+            audio = (audio / max_val * 32767.0).astype(np.int16)
+        if nchannels > 1:
+            audio = audio.reshape(-1, nchannels).mean(axis=1).astype(np.int16)
+        if framerate != 16000 and audio.size > 1:
+            new_len = max(1, int(round(audio.size * 16000.0 / float(framerate))))
+            x_old = np.linspace(0.0, 1.0, num=audio.size, endpoint=False, dtype=np.float32)
+            x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False, dtype=np.float32)
+            resampled = np.interp(x_new, x_old, audio.astype(np.float32))
+            resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
+        else:
+            resampled = audio.astype(np.int16)
         out_bio = io.BytesIO()
         with wave.open(out_bio, 'wb') as wf_out:
             wf_out.setnchannels(1)
             wf_out.setsampwidth(2)
             wf_out.setframerate(16000)
-            wf_out.writeframes(raw)
+            wf_out.writeframes(resampled.tobytes())
         return out_bio.getvalue()
     except Exception:
         return input_bytes
