@@ -306,6 +306,27 @@ class VoiceBot:
         except Exception as e:
             logger.error(f"Fast streaming GPT response error: {e}")
             yield "I'm sorry, I'm having trouble processing your request. Please try again."
+ 
+    async def get_gpt_response_once(self, user_input: str, conversation_history) -> str:
+        """Non-streaming fallback for reliable single-shot responses."""
+        try:
+            system_prompt = self._get_system_prompt()
+            messages = [{"role": "system", "content": system_prompt}]
+            for entry in conversation_history[-2:]:
+                messages.append({"role": "user", "content": entry.get("user", "")})
+                messages.append({"role": "assistant", "content": entry.get("bot", "")})
+            messages.append({"role": "user", "content": user_input})
+            resp = await self.async_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=160,
+                temperature=0.2,
+                stream=False,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            logger.error(f"Single-shot GPT response error: {e}")
+            return "I'm sorry, I couldn't process that. Please try again in a moment."
 
     
     
@@ -882,26 +903,33 @@ async def process_streaming_response(voice_bot, user_text):
         enqueued_any = False
         
         # Collect text chunks from streaming response and enqueue sentences
-        async for text_chunk in voice_bot.get_gpt_response_streaming_fast(user_text, st.session_state.conversation_history):
-            full_response += text_chunk
-            buffer += text_chunk
-            for sentence in sentence_pattern.findall(buffer):
-                clean = sentence.strip()
-                if len(clean) > 4:
-                    await voice_bot.enqueue_tts(clean)
-                    enqueued_any = True
-            # Keep only the remainder that doesn't end with punctuation
-            last_match = None
-            matches = list(sentence_pattern.finditer(buffer))
-            if matches:
-                last_match = matches[-1]
-                buffer = buffer[last_match.end():]
-        
+        try:
+            async for text_chunk in voice_bot.get_gpt_response_streaming_fast(user_text, st.session_state.conversation_history):
+                full_response += text_chunk
+                buffer += text_chunk
+                for sentence in sentence_pattern.findall(buffer):
+                    clean = sentence.strip()
+                    if len(clean) > 4:
+                        await voice_bot.enqueue_tts(clean)
+                        enqueued_any = True
+                # Keep only the remainder that doesn't end with punctuation
+                last_match = None
+                matches = list(sentence_pattern.finditer(buffer))
+                if matches:
+                    last_match = matches[-1]
+                    buffer = buffer[last_match.end():]
+        except Exception as stream_err:
+            logger.error(f"Streaming GPT error, falling back: {stream_err}")
+            full_response = await voice_bot.get_gpt_response_once(user_text, st.session_state.conversation_history)
+            if full_response.strip():
+                await voice_bot.text_to_speech_streaming(full_response.strip())
+                enqueued_any = True
+         
         # Flush any remaining trailing text
         if buffer.strip():
             await voice_bot.enqueue_tts(buffer.strip())
             enqueued_any = True
-        
+         
         # If nothing was enqueued (e.g., no punctuation), speak full response once
         if not enqueued_any and full_response.strip():
             await voice_bot.text_to_speech_streaming(full_response.strip())
@@ -913,9 +941,18 @@ async def process_streaming_response(voice_bot, user_text):
         st.session_state.conversation_history[-1]["bot"] = full_response
         
         return full_response, []
-        
+         
     except Exception as e:
         logger.error(f"Streaming response error: {e}")
+        # Final fallback to single-shot
+        try:
+            full_response = await voice_bot.get_gpt_response_once(user_text, st.session_state.conversation_history)
+            if full_response.strip():
+                await voice_bot.text_to_speech_streaming(full_response.strip())
+                st.session_state.conversation_history[-1]["bot"] = full_response
+                return full_response, []
+        except Exception as e2:
+            logger.error(f"Single-shot fallback failed: {e2}")
         return "I'm sorry, I'm having trouble processing your request. Please try again.", []
 
 def main():
