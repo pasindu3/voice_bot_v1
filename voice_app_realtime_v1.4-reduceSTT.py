@@ -355,7 +355,7 @@ class VoiceBot:
             return base_prompt + " Ask if they want to book an appointment or have a quick medical question."
         
         elif st.session_state.conversation_state == ConversationState.VERIFICATION:
-            return base_prompt + " Verification mode: ask for YYYY-MM-DD DOB and first 3 letters of first and last names."
+            return base_prompt + " Verification mode: ask naturally for date of birth and first 3 letters of first and last names. Be conversational and friendly."
         
         elif st.session_state.conversation_state == ConversationState.BOOKING:
             return base_prompt + " Booking mode: confirm details and next available appointment succinctly."
@@ -369,6 +369,9 @@ class DatabaseManager:
     def verify_patient(self, dob, first_name_part, last_name_part):
         """Verify patient using partial name matching"""
         try:
+            # Convert DD/MM/YYYY to YYYY-MM-DD for database comparison
+            converted_dob = self._convert_date_format(dob)
+            
             # Query patients table
             response = self.supabase.table('patients').select('*').execute()
             
@@ -382,7 +385,7 @@ class DatabaseManager:
                 patient_last = patient.get('last_name', '').lower()
                 
                 # Check date of birth and names
-                if (str(patient_dob) == str(dob) and 
+                if (str(patient_dob) == str(converted_dob) and 
                     patient_first[:3] == first_name_part.lower()[:3] and 
                     patient_last[:3] == last_name_part.lower()[:3]):
                     return patient
@@ -391,6 +394,28 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Patient verification error: {e}")
             return None
+    
+    def _convert_date_format(self, date_str):
+        """Convert DD/MM/YYYY to YYYY-MM-DD format"""
+        try:
+            if not date_str or date_str == 'None':
+                return None
+            
+            # Handle DD/MM/YYYY format
+            if '/' in date_str:
+                parts = date_str.split('/')
+                if len(parts) == 3:
+                    day, month, year = parts
+                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+            
+            # Handle YYYY-MM-DD format (already correct)
+            if '-' in date_str:
+                return date_str
+            
+            return date_str
+        except Exception as e:
+            logger.error(f"Date conversion error: {e}")
+            return date_str
     
     def get_available_doctors(self):
         """Get list of available doctors"""
@@ -434,13 +459,13 @@ async def extract_patient_info_with_gpt_async(text):
         
         Return ONLY a JSON object with these exact keys:
         {{
-            "date_of_birth": "YYYY-MM-DD",
+            "date_of_birth": "DD/MM/YYYY",
             "first_name_letters": "ABC",
             "last_name_letters": "XYZ"
         }}
         
         Rules:
-        1. Convert any date to YYYY-MM-DD format
+        1. Convert any date to DD/MM/YYYY format (day/month/year)
         2. For names: Extract the FIRST 3 letters from the beginning of the full name
         3. If user says "My name is Pasindu Dharmadasa", extract "PAS" and "DHA"
         4. If user says "I am John Smith", extract "JOH" and "SMI"
@@ -448,11 +473,11 @@ async def extract_patient_info_with_gpt_async(text):
         6. Return ONLY the JSON, no other text
         
         Examples:
-        Input: "My name is Pasindu Dharmadasa, DOB is 1997 May 24"
-        Output: {{"date_of_birth": "1997-05-24", "first_name_letters": "PAS", "last_name_letters": "DHA"}}
+        Input: "My name is Pasindu Dharmadasa, DOB is 24/05/1997"
+        Output: {{"date_of_birth": "24/05/1997", "first_name_letters": "PAS", "last_name_letters": "DHA"}}
         
-        Input: "I am John Smith, born 1990-03-15"
-        Output: {{"date_of_birth": "1990-03-15", "first_name_letters": "JOH", "last_name_letters": "SMI"}}
+        Input: "I am John Smith, born 15th March 1990"
+        Output: {{"date_of_birth": "15/03/1990", "first_name_letters": "JOH", "last_name_letters": "SMI"}}
         
         Input: "My first name tree letters are P-A-S. My last name tree letters are D-H-A"
         Output: {{"date_of_birth": null, "first_name_letters": "PAS", "last_name_letters": "DHA"}}
@@ -507,8 +532,8 @@ async def extract_patient_info_fallback_async(text):
     date_patterns = [
         r'(\d{4})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})',
         r'(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})',
-        r'(\d{4})-(\d{2})-(\d{2})',
-        r'(\d{2})/(\d{2})/(\d{4})',
+        r'(\d{2})/(\d{2})/(\d{4})',  # DD/MM/YYYY format
+        r'(\d{4})-(\d{2})-(\d{2})',  # YYYY-MM-DD format (fallback)
     ]
     
     month_map = {
@@ -524,15 +549,15 @@ async def extract_patient_info_fallback_async(text):
             groups = match.groups()
             if len(groups) == 3:
                 if groups[1] in month_map:
-                    if len(groups[0]) == 4:
-                        dob = f"{groups[0]}-{month_map[groups[1]]}-{groups[2].zfill(2)}"
-                    else:
-                        dob = f"{groups[2]}-{month_map[groups[1]]}-{groups[0].zfill(2)}"
+                    if len(groups[0]) == 4:  # Year first: 1997 May 24
+                        dob = f"{groups[2].zfill(2)}/{month_map[groups[1]]}/{groups[0]}"
+                    else:  # Day first: 24 May 1997
+                        dob = f"{groups[0].zfill(2)}/{month_map[groups[1]]}/{groups[2]}"
                 else:
-                    if len(groups[0]) == 4:
-                        dob = f"{groups[0]}-{groups[1]}-{groups[2]}"
-                    else:
-                        dob = f"{groups[2]}-{groups[1]}-{groups[0]}"
+                    if len(groups[0]) == 4:  # YYYY-MM-DD -> DD/MM/YYYY
+                        dob = f"{groups[2]}/{groups[1]}/{groups[0]}"
+                    else:  # DD/MM/YYYY (already correct)
+                        dob = f"{groups[0]}/{groups[1]}/{groups[2]}"
             break
     
     first_name_part = None
@@ -592,11 +617,11 @@ def extract_patient_info_with_gpt(text):
         6. Return ONLY the JSON, no other text
         
         Examples:
-        Input: "My name is Pasindu Dharmadasa, DOB is 1997 May 24"
-        Output: {{"date_of_birth": "1997-05-24", "first_name_letters": "PAS", "last_name_letters": "DHA"}}
+        Input: "My name is Pasindu Dharmadasa, DOB is 24/05/1997"
+        Output: {{"date_of_birth": "24/05/1997", "first_name_letters": "PAS", "last_name_letters": "DHA"}}
         
-        Input: "I am John Smith, born 1990-03-15"
-        Output: {{"date_of_birth": "1990-03-15", "first_name_letters": "JOH", "last_name_letters": "SMI"}}
+        Input: "I am John Smith, born 15/03/1990"
+        Output: {{"date_of_birth": "15/03/1990", "first_name_letters": "JOH", "last_name_letters": "SMI"}}
         
         Input: "My first name tree letters are P-A-S. My last name tree letters are D-H-A"
         Output: {{"date_of_birth": null, "first_name_letters": "PAS", "last_name_letters": "DHA"}}
@@ -661,8 +686,8 @@ def extract_patient_info_fallback(text):
     date_patterns = [
         r'(\d{4})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})',  # 1997 May 24
         r'(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})',  # 24 May 1997
-        r'(\d{4})-(\d{2})-(\d{2})',  # 1997-05-24
-        r'(\d{2})/(\d{2})/(\d{4})',  # 24/05/1997
+        r'(\d{2})/(\d{2})/(\d{4})',  # DD/MM/YYYY format
+        r'(\d{4})-(\d{2})-(\d{2})',  # YYYY-MM-DD format (fallback)
     ]
     
     # Month name to number mapping
@@ -680,14 +705,14 @@ def extract_patient_info_fallback(text):
             if len(groups) == 3:
                 if groups[1] in month_map:  # Month name format
                     if len(groups[0]) == 4:  # Year first: 1997 May 24
-                        dob = f"{groups[0]}-{month_map[groups[1]]}-{groups[2].zfill(2)}"
+                        dob = f"{groups[2].zfill(2)}/{month_map[groups[1]]}/{groups[0]}"
                     else:  # Day first: 24 May 1997
-                        dob = f"{groups[2]}-{month_map[groups[1]]}-{groups[0].zfill(2)}"
+                        dob = f"{groups[0].zfill(2)}/{month_map[groups[1]]}/{groups[2]}"
                 else:  # Numeric format
-                    if len(groups[0]) == 4:  # YYYY-MM-DD
-                        dob = f"{groups[0]}-{groups[1]}-{groups[2]}"
-                    else:  # DD/MM/YYYY
-                        dob = f"{groups[2]}-{groups[1]}-{groups[0]}"
+                    if len(groups[0]) == 4:  # YYYY-MM-DD -> DD/MM/YYYY
+                        dob = f"{groups[2]}/{groups[1]}/{groups[0]}"
+                    else:  # DD/MM/YYYY (already correct)
+                        dob = f"{groups[0]}/{groups[1]}/{groups[2]}"
             break
     
     # Enhanced name extraction - look for various patterns
@@ -827,13 +852,13 @@ async def process_voice_input_streaming(audio_data):
             if need_dob or need_first or need_last:
                 prompts = []
                 if need_dob:
-                    prompts.append("your date of birth in YYYY-MM-DD")
+                    prompts.append("your date of birth")
                 if need_first:
                     prompts.append("the first 3 letters of your first name")
                 if need_last:
                     prompts.append("the first 3 letters of your last name")
                 ask = " and ".join(prompts)
-                bot_response = f"Thanks. I still need {ask}."
+                bot_response = f"Thanks! I still need {ask}. Could you please provide that?"
                 await voice_bot.text_to_speech_streaming(bot_response)
                 return bot_response, []
             
@@ -849,8 +874,9 @@ async def process_voice_input_streaming(audio_data):
             else:
                 st.session_state.conversation_state = ConversationState.FALLBACK
                 bot_response = (
-                    f"❌ I couldn't find a matching record.\n- DOB: {inputs['dob']}\n- First: {inputs['first']}\n- Last: {inputs['last']}\n\n"
-                    "Please spell your full first and last name, and confirm your date of birth (YYYY-MM-DD)."
+                    f"I'm sorry, but I couldn't find a matching record with the information you provided.\n"
+                    f"Let me confirm what I have: Date of birth {inputs['dob']}, first name starts with {inputs['first']}, last name starts with {inputs['last']}.\n\n"
+                    "Could you please spell out your full first and last name, and tell me your date of birth again?"
                 )
             await voice_bot.text_to_speech_streaming(bot_response)
             return bot_response, []
@@ -994,7 +1020,7 @@ def main():
         audio_data = audio_recorder(
             interval=20,          # faster polling
             threshold=-50,        # more sensitive to start/end speech
-            silenceTimeout=500,   # stop sooner after silence
+            silenceTimeout=2000,  # stop sooner after silence
             play=False            # Set to True to play the audio during recording
         )
         
@@ -1112,11 +1138,11 @@ def main():
         
         **For Appointment Booking:**
         - Say: "I want to book an appointment"
-        - Provide your date of birth (YYYY-MM-DD format)
+        - Provide your date of birth (DD/MM/YYYY format)
         - Provide first 3 letters of your first name
         - Provide first 3 letters of your last name
         
-        **Example:** "My date of birth is 1990-05-15, my first name starts with JOH, and my last name starts with SMI"
+        **Example:** "My date of birth is 15/05/1990, my first name starts with JOH, and my last name starts with SMI"
         
         **Features:**
         - ✅ **Automatic silence detection** - no need to click stop
